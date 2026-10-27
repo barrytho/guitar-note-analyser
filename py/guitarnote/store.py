@@ -10,8 +10,10 @@ record but out of the analysis, and can be undone.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 from .measure import METHOD, Measurement
 
@@ -66,12 +68,19 @@ class Store:
             db.executescript(SCHEMA)
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         # A fresh connection per call: the web server answers requests on
         # several threads, and sqlite3 connections must not cross threads.
+        # sqlite3's own `with connection:` commits or rolls back but never
+        # closes, so on its own it leaked one connection per request.
         db = sqlite3.connect(self.path)
         db.row_factory = sqlite3.Row
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def add(self, *, pedal: str, gain: float, label: str, comment: str, source: str,
             wav: bytes, m: Measurement) -> int:
@@ -145,7 +154,7 @@ class Store:
 
     def backup(self, destination: str | Path) -> None:
         """A consistent copy of the database, safe to take while it is in use."""
-        with self._connect() as source, sqlite3.connect(destination) as target:
+        with self._connect() as source, closing(sqlite3.connect(destination)) as target:
             source.backup(target)
 
     @staticmethod
