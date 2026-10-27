@@ -4,7 +4,8 @@
 const $ = selector => document.querySelector(selector);
 const RED = "#c0392b", GREEN = "#2c7a3f", BLUE = "#1f5fa8", WAVE = "#3b6ea8";
 
-const state = {notes: [], selected: null, detail: null, analysis: null, recorder: null};
+const state = {notes: [], selected: null, detail: null, analysis: null, recorder: null,
+               mode: "server"};      // "server", or "browser" when Python runs in the page
 
 // ---------------------------------------------------------------- helpers
 function h(tag, attrs, ...children) {
@@ -289,12 +290,13 @@ function renderAnalysis(result) {
     y: {min: lo, max: hi, label: "Crest factor (dB)"},
     layers: [
       {type: "points", points: spread, r: 3.2, fill: WAVE, opacity: 0.45},
-      {type: "line", points: means, stroke: "#1d1d1b", width: 1.2},
+      result.fit ? {type: "line", points: result.fit.line, stroke: RED, width: 1.8} : null,
       {type: "errorbars", items: result.groups.map(g => [g.gain, g.mean, g.se == null ? null : g.mean - g.se, g.se == null ? null : g.mean + g.se]), stroke: "#1d1d1b", width: 1.4},
       {type: "points", points: means, r: 4.6, fill: "#1d1d1b"},
-    ],
+    ].filter(Boolean),
     legend: [{type: "point", label: "one note", fill: WAVE, opacity: 0.45, r: 3.2},
-             {type: "point", label: "mean ± standard error", fill: "#1d1d1b", r: 4.6}],
+             {type: "point", label: "mean ± standard error", fill: "#1d1d1b", r: 4.6},
+             ...(result.fit ? [{label: `straight-line fit (R² = ${fixed(result.fit.r2, 2)})`, stroke: RED, width: 1.8}] : [])],
   });
   chartButtons("chart-gain", `${slug(pedal)}${label ? "-" + slug(label) : ""}-crest-vs-gain`);
 
@@ -401,7 +403,7 @@ async function startRecording() {
   listInputs();
 
   const context = new AudioContext();
-  await context.audioWorklet.addModule("static/recorder-worklet.js");
+  await context.audioWorklet.addModule(`static/recorder-worklet.js?v=${GuitarnoteBackend.build}`);
   const source = context.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(context, "capture");
   const mute = context.createGain();
@@ -476,6 +478,122 @@ $("#gain-down").addEventListener("click", () => nudgeGain(-1));
 $("#gain-up").addEventListener("click", () => nudgeGain(1));
 $("#gain").addEventListener("input", () => { remember("gain", $("#gain").value); updateGainCount(); });
 $("#label").addEventListener("input", () => { remember("label", $("#label").value); updateGainCount(); });
+// ---------------------------------------------------------------- background explanations
+// The words and numbers come from Python (explain.py); this only lays them out.
+function peakRmsChart(container, side, reach) {
+  Charts.plot(container, {
+    width: 560, height: 200, margin: {l: 58, r: 14},
+    x: {min: 0, max: side.zoom.length ? side.zoom[side.zoom.length - 1][0] : 30, label: "Time (ms)", count: 4},
+    y: {min: -reach, max: reach, label: "Amplitude", count: 4},
+    layers: [
+      {type: "hline", y: side.peak, stroke: RED, dash: "5 4", label: `peak ${sig(side.peak, 3)}`},
+      {type: "hline", y: -side.peak, stroke: RED, dash: "5 4", below: true},
+      {type: "hline", y: side.rms, stroke: GREEN, width: 1.6, label: `RMS ${sig(side.rms, 3)}`, below: true},
+      {type: "hline", y: -side.rms, stroke: GREEN, width: 1.6},
+      {type: "line", points: side.zoom, stroke: WAVE, width: 1.2},
+    ],
+    legend: [{type: "point", label: `crest factor ${fixed(side.crest_db, 1)} dB`, fill: "#ffffff", r: 0}],
+  });
+}
+
+async function loadExplainers() {
+  const data = await api("api/explainers");
+  const paragraphs = list => list.map(text => h("p", {}, text));
+  $("#crest-text").replaceChildren(...paragraphs(data.crest.paragraphs));
+  const reach = Math.max(data.crest.clean.peak, data.crest.clipped.peak) * 1.35;
+  peakRmsChart($("#chart-clean"), data.crest.clean, reach);
+  peakRmsChart($("#chart-clipped"), data.crest.clipped, reach);
+
+  const fourier = data.fourier;
+  $("#fourier-text").replaceChildren(...paragraphs(fourier.paragraphs));
+  $("#fourier-formula").textContent = fourier.formula;
+  const all = fourier.components.concat([fourier.total]).flatMap(c => c.points.map(p => Math.abs(p[1])));
+  const top = Math.max(...all) * 1.1;
+  const colours = ["#86b6ef", "#e3b04b", "#1baf7a", "#c08ad6"];
+  Charts.plot($("#chart-fourier"), {
+    height: 260,
+    x: {min: 0, max: fourier.total.points[fourier.total.points.length - 1][0], label: "Time (ms)"},
+    y: {min: -top, max: top, label: "Amplitude", count: 4},
+    layers: fourier.components.map((c, i) => ({type: "line", points: c.points, stroke: colours[i], width: 1.2}))
+      .concat([{type: "line", points: fourier.total.points, stroke: "#1d1d1b", width: 2}]),
+    legend: fourier.components.map((c, i) => ({label: `harmonic ${i + 1}`, stroke: colours[i]}))
+      .concat([{label: "sum of all", stroke: "#1d1d1b", width: 2}]),
+  });
+}
+
+$("#explainer").addEventListener("toggle", () => remember("explainer", $("#explainer").open ? "open" : "closed"));
+
+// ---------------------------------------------------------------- save, load, clear
+async function saveResponse(response) {
+  const match = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "");
+  const url = URL.createObjectURL(await response.blob());
+  const a = h("a", {href: url, download: match ? match[1] : "guitarnote-results.db"});
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+$("#load-results").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  setStatus(`Loading ${file.name}\u2026`);
+  try {
+    const result = await api("api/import", {method: "POST", body: await file.arrayBuffer()});
+    const parts = [`Loaded ${result.added} note${result.added === 1 ? "" : "s"} from ${file.name}`];
+    if (result.skipped) parts.push(`${result.skipped} already here, skipped`);
+    if (result.unreadable) parts.push(`${result.unreadable} could not be read`);
+    await openPedal(result.pedals[0] || $("#pedal").value.trim());
+    setStatus(parts.join("; ") + ".");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+$("#clear-results").addEventListener("click", async () => {
+  const pedals = await api("api/pedals");
+  const total = pedals.reduce((sum, p) => sum + p.notes, 0);
+  if (!total) {
+    setStatus("There are no results to clear.");
+    return;
+  }
+  $("#clear-text").textContent =
+    `This removes all ${total} note${total === 1 ? "" : "s"}, for ${pedals.length} ` +
+    `pedal${pedals.length === 1 ? "" : "s"}, with their recordings. ` +
+    (state.mode === "browser"
+      ? "They are stored only in this browser, so without a saved copy they cannot be brought back."
+      : "A dated copy is also kept in data/archive/ on this computer, but saving one you can find easily is wiser.");
+  const dialog = $("#clear-dialog");
+  const choice = await new Promise(resolve => {
+    const pick = event => {
+      const value = event.target.dataset && event.target.dataset.choice;
+      if (!value) return;
+      dialog.removeEventListener("click", pick);
+      dialog.close();
+      resolve(value);
+    };
+    dialog.addEventListener("click", pick);
+    dialog.addEventListener("cancel", () => { dialog.removeEventListener("click", pick); resolve("cancel"); }, {once: true});
+    dialog.showModal();
+  });
+  if (choice === "cancel") return;
+  try {
+    if (choice === "save") {
+      setStatus("Saving a copy\u2026");
+      const response = await fetch("api/export/notes.db");
+      if (!response.ok) throw new Error("The copy could not be saved, so nothing was cleared.");
+      await saveResponse(response);
+    }
+    const result = await api("api/clear", {method: "POST"});
+    await openPedal($("#pedal").value.trim());
+    setStatus(`Cleared ${result.cleared} note${result.cleared === 1 ? "" : "s"}.` +
+              (result.archived ? ` An archive copy is at ${result.archived}.` : ""));
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
 async function openPedal(name) {
   $("#pedal").value = name;
   remember("pedal", name);
@@ -521,7 +639,7 @@ $("#duration").addEventListener("change", () => remember("duration", $("#duratio
 
 (async function start() {
   try {
-    await GuitarnoteBackend.ready;        // a local server, or Python in this browser
+    state.mode = await GuitarnoteBackend.ready;   // a local server, or Python in this browser
   } catch (error) {
     setStatus(error.message, true);
     return;
@@ -536,10 +654,13 @@ $("#duration").addEventListener("change", () => remember("duration", $("#duratio
     if (pedals.length) $("#pedal").value = pedals[0].pedal;
   }
   await listInputs().catch(() => {});
+  if (recall("explainer") === "closed") $("#explainer").open = false;
   try {
     await refresh();
     if (state.notes.length) await showNote(state.notes[state.notes.length - 1].id);
   } catch (error) {
     setStatus(error.message, true);
   }
+  // Last, so a slow first load in the browser copy never holds up the notes.
+  loadExplainers().catch(error => $("#crest-text").replaceChildren(h("p", {class: "hint"}, error.message)));
 })();

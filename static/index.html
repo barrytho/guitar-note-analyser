@@ -51,10 +51,60 @@
   </details>
   <p id="mode-note" class="mode-note" hidden>This copy runs entirely in your browser. Your notes and
      recordings are saved in this browser only and are never uploaded, so use
-     <em>Database (SQLite)</em> below now and then to keep a copy.</p>
+     <em>Save results</em> now and then to keep a copy.</p>
+  <div class="results-bar">
+    <span class="results-title">Your results</span>
+    <a id="save-results" class="button" href="api/export/notes.db">Save results</a>
+    <label class="button" for="load-results">Load results&hellip;</label>
+    <input id="load-results" type="file" accept=".db,application/vnd.sqlite3,application/x-sqlite3" hidden>
+    <button type="button" id="clear-results">Clear results</button>
+    <span class="hint">Every pedal and note, with its audio, in one .db file. Loading adds a saved
+      file&rsquo;s notes to the ones here and skips any already present.</span>
+  </div>
+  <dialog id="clear-dialog" aria-labelledby="clear-title">
+    <h2 id="clear-title">Clear all results?</h2>
+    <p id="clear-text"></p>
+    <div class="actions">
+      <button type="button" data-choice="save" class="default">Save a copy, then clear</button>
+      <button type="button" data-choice="clear">Clear without saving</button>
+      <button type="button" data-choice="cancel">Cancel</button>
+    </div>
+  </dialog>
 </header>
 
 <main>
+<details class="card explainer" id="explainer" open>
+  <summary><h2>What crest factor is, and how the demo notes are made</h2></summary>
+  <div class="explainer-grid">
+    <section aria-labelledby="crest-intuition">
+      <h3 id="crest-intuition">Crest factor, intuitively</h3>
+      <div id="crest-text" class="explainer-text"><p class="hint">Loading&hellip;</p></div>
+      <div class="pair">
+        <figure class="chart">
+          <figcaption><strong>A clean pluck</strong> (30 ms): sharp summits, low average.</figcaption>
+          <div id="chart-clean"></div>
+        </figure>
+        <figure class="chart">
+          <figcaption><strong>The same pluck, heavily clipped:</strong> summits levelled, average raised.</figcaption>
+          <div id="chart-clipped"></div>
+        </figure>
+      </div>
+    </section>
+    <section aria-labelledby="fourier-title">
+      <h3 id="fourier-title">How the demo notes are made: Fourier synthesis</h3>
+      <div id="fourier-text" class="explainer-text"></div>
+      <p id="fourier-formula" class="formula"></p>
+      <figure class="chart">
+        <figcaption><strong>Building a note from sine waves</strong>, over two cycles of the
+          110 Hz fundamental. The thin lines are the first four harmonics; the black line is all
+          of them added together. (Here every harmonic starts in step so the build-up is easy to
+          see; in the demo notes each starts at a random point in its cycle.)</figcaption>
+        <div id="chart-fourier"></div>
+      </figure>
+    </section>
+  </div>
+</details>
+
 <div class="top">
   <section class="card" id="record-card" aria-labelledby="record-title">
     <h2 id="record-title">Record a note</h2>
@@ -180,8 +230,10 @@
   <figure class="chart">
     <figcaption><strong>Crest factor at each gain setting.</strong> Each small dot is one note
       (spread sideways a little so they do not hide each other); each large dot is the average at
-      that setting, with error bars of &plusmn; one standard error. If the pedal&rsquo;s clipping
-      follows the knob, the dots fall from left to right.</figcaption>
+      that setting, with error bars of &plusmn; one standard error. The red line is the straight
+      line that fits all the notes best (least squares); its slope is the average change in crest
+      factor per step of the knob, worked out below. If the pedal&rsquo;s clipping follows the
+      knob, the dots and the line fall from left to right.</figcaption>
     <div id="chart-gain"></div>
     <div class="downloads" data-chart="chart-gain"></div>
   </figure>
@@ -209,10 +261,10 @@
     <div class="downloads">
       <a id="dl-notes" class="button">Notes (CSV)</a>
       <a id="dl-all" class="button" href="api/export/notes.csv">Every pedal (CSV)</a>
-      <a id="dl-db" class="button" href="api/export/notes.db">Database (SQLite)</a>
     </div>
   </div>
-  <p class="hint">Notes are never deleted. Untick a note to leave it out of the analysis.</p>
+  <p class="hint">Untick a note to leave it out of the analysis without removing it; tick it again
+    to bring it back.</p>
   <div class="table-wrap"><table id="notes-table"></table></div>
 </section>
 </main>

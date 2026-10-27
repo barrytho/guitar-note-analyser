@@ -24,8 +24,11 @@ GET   /api/notes/ID/window.csv            the analysed samples
 GET   /api/analysis?pedal=P&label=L       crest factor against gain, with working
 GET   /api/export/notes.csv?pedal=P       every note's numbers
 GET   /api/export/summary.csv?pedal=P&label=L   the per-setting summary
-GET   /api/export/notes.db                a copy of the whole database
+GET   /api/export/notes.db                Save results: the whole database, audio included
+POST  /api/import                         Load results: body is a saved .db; merged in
+POST  /api/clear                          Clear results (archived first by the server)
 POST  /api/demo                           add the synthetic demo notes, once
+GET   /api/explainers                     the crest-factor picture and the demo recipe
 """
 from __future__ import annotations
 
@@ -34,14 +37,17 @@ import io
 import json
 import math
 import re
+import sqlite3
 import statistics
 import tempfile
 import threading
+from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 
-from . import __version__, stats
+from . import __version__, explain, stats
 from .demo import DEMO_PEDAL, add_demo_notes
 from .measure import NoteError, chart_data, describe_crest, measure
 from .store import EXPORT_COLUMNS, Store
@@ -104,6 +110,7 @@ class App:
         self.store = store
         self.backend = backend          #: "server" or "browser", reported by /api/ping
         self._demo_lock = threading.Lock()
+        self._explainers: dict | None = None
 
     # -- requests ---------------------------------------------------------
     def handle(self, method: str, path: str, params: dict, body: bytes = b"") -> Response:
@@ -119,6 +126,12 @@ class App:
         label = params.get("label")             # absent means every label
         if method == "GET" and path == "/api/ping":
             return _json({"ok": True, "backend": self.backend, "version": __version__})
+        if method == "GET" and path == "/api/explainers":
+            return _json(self.explainers())
+        if method == "POST" and path == "/api/import":
+            return _json(self.import_results(body), HTTPStatus.CREATED)
+        if method == "POST" and path == "/api/clear":
+            return _json(self.clear_results())
         if method == "POST" and path == "/api/demo":
             return _json(self.load_demo(), HTTPStatus.CREATED)
         if method == "GET" and path == "/api/pedals":
@@ -161,10 +174,72 @@ class App:
                 copy = Path(folder) / "notes.db"
                 self.store.backup(copy)
                 return Response(200, copy.read_bytes(), "application/vnd.sqlite3",
-                                "guitarnote-notes.db")
+                                f"guitarnote-results-{datetime.now():%Y-%m-%d}.db")
         raise HTTPError(HTTPStatus.NOT_FOUND, f"No such page: {method} {path}")
 
     # -- the work ---------------------------------------------------------
+    def explainers(self) -> dict:
+        """The background explanations; worked out once, since they never change."""
+        if self._explainers is None:
+            self._explainers = {"crest": explain.crest_picture(), "fourier": explain.demo_recipe()}
+        return self._explainers
+
+    def import_results(self, body: bytes) -> dict:
+        """Load results saved earlier with Save results, adding them to what is here.
+
+        Merging rather than replacing means nothing already recorded is lost, and
+        a note that is already here (same take, same time) is skipped, so loading
+        the same file twice changes nothing. Every loaded note is measured again
+        from its audio, so its numbers follow the current recipe whatever version
+        saved the file.
+        """
+        if not body.startswith(b"SQLite format 3\x00"):
+            raise HTTPError(HTTPStatus.BAD_REQUEST, "That is not a results file. Choose a .db "
+                                                    "file saved with Save results.")
+        with tempfile.TemporaryDirectory() as folder:
+            incoming = Path(folder) / "incoming.db"
+            incoming.write_bytes(body)
+            try:
+                with closing(sqlite3.connect(incoming)) as db:
+                    db.row_factory = sqlite3.Row
+                    rows = db.execute("""SELECT notes.*, audio.wav FROM notes
+                                         JOIN audio ON audio.note_id = notes.id
+                                         ORDER BY notes.id""").fetchall()
+            except sqlite3.DatabaseError:
+                raise HTTPError(HTTPStatus.BAD_REQUEST, "That database was not saved by this "
+                                                        "app, so it has no notes to load.")
+        added, skipped, unreadable, pedals = 0, 0, 0, []
+        for row in rows:
+            wav = bytes(row["wav"])
+            if self.store.has_note(row["created_at"], wav):
+                skipped += 1
+                continue
+            try:
+                audio = read_wav(wav)
+                m, _ = measure(audio.samples, audio.sample_rate)
+            except (WavError, NoteError):
+                unreadable += 1
+                continue
+            self.store.add(pedal=row["pedal"], gain=row["gain"], label=row["label"],
+                           comment=row["comment"], source=row["source"], wav=wav, m=m,
+                           created_at=row["created_at"], included=bool(row["included"]))
+            added += 1
+            if row["pedal"] not in pedals:
+                pedals.append(row["pedal"])
+        return {"added": added, "skipped": skipped, "unreadable": unreadable,
+                "pedals": pedals}
+
+    def clear_results(self) -> dict:
+        """Remove every note. The local server keeps a dated copy first."""
+        archived = None
+        if self.backend == "server" and self.store.count():
+            folder = self.store.path.parent / "archive"
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / f"notes-{datetime.now():%Y-%m-%d-%H%M%S}.db"
+            self.store.backup(target)
+            archived = str(target)
+        return {"cleared": self.store.clear(), "archived": archived}
+
     def load_demo(self) -> dict:
         """Add the synthetic demo notes, unless they are already there.
 

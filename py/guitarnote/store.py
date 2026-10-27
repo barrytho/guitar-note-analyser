@@ -4,8 +4,11 @@ The audio itself is stored alongside the numbers, so the database is the whole
 record of an experiment: any note can be re-measured or re-exported later, and
 copying the one file backs everything up.
 
-Notes are never deleted. A bad take is *excluded*, which leaves it in the
-record but out of the analysis, and can be undone.
+A single note is never deleted: a bad take is *excluded*, which leaves it in
+the record but out of the analysis, and can be undone. The only removal is
+``clear()``, behind the page's Clear results button, which asks first and
+offers to save a copy; the local server also archives the file before
+clearing (see ``App.clear_results``).
 """
 from __future__ import annotations
 
@@ -83,15 +86,19 @@ class Store:
             db.close()
 
     def add(self, *, pedal: str, gain: float, label: str, comment: str, source: str,
-            wav: bytes, m: Measurement) -> int:
+            wav: bytes, m: Measurement, created_at: str | None = None,
+            included: bool = True) -> int:
+        """Store one measured note. ``created_at`` and ``included`` are given when
+        loading notes saved earlier, so they keep their history."""
+        created_at = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._connect() as db:
             cursor = db.execute(
-                """INSERT INTO notes (created_at, pedal, gain, label, comment, source, method,
-                       sample_rate, n_samples, take_peak_dbfs, onset_s, window_start_s,
+                """INSERT INTO notes (created_at, pedal, gain, label, comment, included, source,
+                       method, sample_rate, n_samples, take_peak_dbfs, onset_s, window_start_s,
                        window_end_s, peak, mean_square, rms, crest_ratio, crest_db, warnings)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (datetime.now(timezone.utc).isoformat(timespec="seconds"), pedal, gain,
-                 label, comment, source, METHOD, m.sample_rate, m.n_samples,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (created_at, pedal, gain, label, comment, int(included),
+                 source, METHOD, m.sample_rate, m.n_samples,
                  m.take_peak_dbfs, m.onset_s, m.window_start_s, m.window_end_s, m.peak,
                  m.mean_square, m.rms, m.crest_ratio, m.crest_db, "\n".join(m.warnings)))
             note_id = cursor.lastrowid
@@ -156,6 +163,29 @@ class Store:
         """A consistent copy of the database, safe to take while it is in use."""
         with self._connect() as source, closing(sqlite3.connect(destination)) as target:
             source.backup(target)
+
+    def has_note(self, created_at: str, wav: bytes) -> bool:
+        """Is this exact take already stored? Used so loading a file twice adds nothing."""
+        with self._connect() as db:
+            row = db.execute("""SELECT 1 FROM notes JOIN audio ON audio.note_id = notes.id
+                                WHERE notes.created_at = ? AND audio.wav = ? LIMIT 1""",
+                             (created_at, wav)).fetchone()
+        return row is not None
+
+    def count(self) -> int:
+        with self._connect() as db:
+            return db.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+
+    def clear(self) -> int:
+        """Remove every note and its audio; return how many there were."""
+        with self._connect() as db:
+            removed = db.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+            db.execute("DELETE FROM audio")
+            db.execute("DELETE FROM notes")
+        # Give the space back: VACUUM cannot run inside the transaction above.
+        with closing(sqlite3.connect(self.path, isolation_level=None)) as db:
+            db.execute("VACUUM")
+        return removed
 
     @staticmethod
     def _row(row: sqlite3.Row) -> dict:

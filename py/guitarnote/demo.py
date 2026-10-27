@@ -22,24 +22,49 @@ SAMPLE_RATE = 48_000
 DEMO_PEDAL = "Synthetic demo pedal"
 DEMO_LABEL = "A2 (synthetic)"
 
+# The recipe for a note, kept here so that explain.py quotes the same numbers
+# the generator uses.
+F0 = 110.0                  #: Hz, the open A string
+HARMONICS = 29              #: sine waves added together
+PLUCK_POSITION = 0.22       #: fraction of the string's length from the bridge
+INHARMONICITY = 3e-5        #: how sharp a stiff string's upper harmonics run
+DECAY_TIME = 1.2            #: seconds, the fundamental's time constant
+BRIGHTNESS = 0.9            #: harmonic n fades with time constant DECAY_TIME / n**BRIGHTNESS
+DRIVE_MAX = 80.0            #: clipper drive at the top of the knob
+ASYMMETRY = 0.85            #: the negative half clips this much lower
 
-def pluck(f0: float = 110.0, duration: float = 1.0, sample_rate: int = SAMPLE_RATE,
-          pluck_position: float = 0.22, pre_roll: float = 0.1,
+
+def partials(f0: float = F0, pluck_position: float = PLUCK_POSITION,
+             sample_rate: int = SAMPLE_RATE) -> list[dict]:
+    """The sine waves a note is built from: frequency, starting size, fade time."""
+    out = []
+    for k in range(1, HARMONICS + 1):
+        freq = k * f0 * math.sqrt(1 + INHARMONICITY * k * k)   # slightly sharp, as a stiff string is
+        if freq > 0.45 * sample_rate:
+            break
+        out.append({"n": k, "frequency": freq,
+                    "amplitude": abs(math.sin(k * math.pi * pluck_position)) / k,
+                    "decay_s": DECAY_TIME / k ** BRIGHTNESS})
+    return out
+
+
+def pluck(f0: float = F0, duration: float = 1.0, sample_rate: int = SAMPLE_RATE,
+          pluck_position: float = PLUCK_POSITION, pre_roll: float = 0.1,
           rng: random.Random | None = None) -> list[float]:
-    """A plucked-string note after ``pre_roll`` seconds of silence, peak 1."""
+    """A plucked-string note after ``pre_roll`` seconds of silence, peak 1.
+
+    Fourier synthesis: the note is the sum of the sine waves from partials(),
+    each starting at a random phase and fading at its own rate.
+    """
     rng = rng or random.Random()
     n = int(duration * sample_rate)
     start = int(pre_roll * sample_rate)
     y = [0.0] * n
-    for k in range(1, 30):
-        freq = k * f0 * math.sqrt(1 + 3e-5 * k * k)        # slightly sharp, as a stiff string is
-        if freq > 0.45 * sample_rate:
-            break
-        amplitude = abs(math.sin(k * math.pi * pluck_position)) / k
-        decay = math.exp(-1.0 / ((1.2 / k ** 0.9) * sample_rate))
+    for p in partials(f0, pluck_position, sample_rate):
+        decay = math.exp(-1.0 / (p["decay_s"] * sample_rate))
         # Rotate a phasor rather than calling sin() for every sample.
-        step = cmath.exp(2j * math.pi * freq / sample_rate) * decay
-        z = amplitude * cmath.exp(1j * rng.uniform(0, 2 * math.pi))
+        step = cmath.exp(2j * math.pi * p["frequency"] / sample_rate) * decay
+        z = p["amplitude"] * cmath.exp(1j * rng.uniform(0, 2 * math.pi))
         for i in range(start, n):
             y[i] += z.imag
             z *= step
@@ -53,12 +78,12 @@ def pluck(f0: float = 110.0, duration: float = 1.0, sample_rate: int = SAMPLE_RA
     return [v / peak for v in y]
 
 
-def drive_for_setting(setting: float, top: float = 10.0, drive_max: float = 80.0) -> float:
+def drive_for_setting(setting: float, top: float = 10.0, drive_max: float = DRIVE_MAX) -> float:
     """Knob 0..top maps geometrically onto a drive of 1..drive_max."""
     return drive_max ** (setting / top)
 
 
-def clipper(x: list[float], drive: float, asymmetry: float = 0.85,
+def clipper(x: list[float], drive: float, asymmetry: float = ASYMMETRY,
             out_peak: float = 10 ** (-12 / 20)) -> list[float]:
     """Soft clipping, gentler on the negative side, then a fixed output peak
     (as if the pedal's level knob were set to match loudness)."""

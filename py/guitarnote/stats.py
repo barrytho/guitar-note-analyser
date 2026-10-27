@@ -12,6 +12,11 @@ explained in a sentence and need no statistical tables:
   count how often chance alone gives a correlation at least as strong.
 * 95% interval: resample the notes with replacement many times, recompute rho
   each time, and keep the middle 95% of the results.
+
+A least-squares straight line is fitted as well, because its slope answers the
+practical question directly: how many decibels of crest factor one step of the
+knob takes off, on average. It is a summary, not a model: a clipper's response
+usually curves as it nears a square wave, which R-squared will show.
 """
 from __future__ import annotations
 
@@ -96,6 +101,39 @@ def bootstrap_interval(x: list[float], y: list[float], n: int = BOOTSTRAPS,
         return float("nan"), float("nan"), len(rhos)
     cuts = statistics.quantiles(rhos, n=40, method="inclusive")   # every 2.5%
     return cuts[0], cuts[-1], len(rhos)
+
+
+def linear_fit(x: list[float], y: list[float]) -> dict:
+    """Least-squares straight line y = intercept + slope * x, with its pieces."""
+    mx, my = statistics.fmean(x), statistics.fmean(y)
+    sxx = math.fsum((a - mx) ** 2 for a in x)
+    sxy = math.fsum((a - mx) * (b - my) for a, b in zip(x, y))
+    syy = math.fsum((b - my) ** 2 for b in y)
+    if sxx == 0:
+        return {}
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    ss_res = math.fsum((b - (intercept + slope * a)) ** 2 for a, b in zip(x, y))
+    return {"slope": slope, "intercept": intercept, "mean_x": mx, "mean_y": my,
+            "sxx": sxx, "sxy": sxy, "syy": syy, "ss_res": ss_res,
+            "r2": 1 - ss_res / syy if syy > 0 else float("nan")}
+
+
+def bootstrap_slope(x: list[float], y: list[float], n: int = BOOTSTRAPS,
+                    seed: int = BOOTSTRAP_SEED + 1) -> tuple[float, float, int]:
+    """Percentile 95% interval for the slope, resampling notes as for rho."""
+    rng = random.Random(seed)
+    pairs = list(zip(x, y))
+    slopes = []
+    for _ in range(n):
+        sample = [rng.choice(pairs) for _ in pairs]
+        fit = linear_fit([p[0] for p in sample], [p[1] for p in sample])
+        if fit:
+            slopes.append(fit["slope"])
+    if len(slopes) < 20:
+        return float("nan"), float("nan"), len(slopes)
+    cuts = statistics.quantiles(slopes, n=40, method="inclusive")
+    return cuts[0], cuts[-1], len(slopes)
 
 
 def by_setting(gains: list[float], values: list[float]) -> list[dict]:
@@ -250,6 +288,75 @@ def analyse(gains: list[float], crest_db: list[float]) -> dict:
            f"away from that, and the average is known to about \u00b1{example['se']:.2f} dB."
            if example["n"] > 1 else ""))
 
+    fit = linear_fit(gains, crest_db)
+    s_low, s_high, s_used = bootstrap_slope(gains, crest_db)
+    x0, x1 = groups[0]["gain"], groups[-1]["gain"]
+    a, b = fit["intercept"], fit["slope"]
+    result["fit"] = {"slope": b, "intercept": a, "r2": fit["r2"], "ci": [s_low, s_high],
+                     "line": [[x0, a + b * x0], [x1, a + b * x1]],
+                     "equation": f"crest factor = {a:.2f} {'−' if b < 0 else '+'} "
+                                 f"{abs(b):.3f} × gain"}
+    if math.isnan(s_low):
+        slope_range = "There were too few usable resamples to give a range."
+    elif s_high < 0:
+        slope_range = ("The whole range is below zero: each step of the knob reliably lowers "
+                       "the crest factor.")
+    elif s_low > 0:
+        slope_range = "The whole range is above zero: the crest factor reliably rises with gain."
+    else:
+        slope_range = ("The range includes zero, so these notes cannot yet rule out a flat "
+                       "line.")
+    curve = ("The dots follow the line closely." if fit["r2"] >= 0.9 else
+             "The dots stray from the line, typically because the clipper levels off as it "
+             "nears a square wave, so the slope is an average over the whole knob rather than "
+             "the rate at any one setting. Spearman's ρ above does not assume a straight "
+             "line, which is why it is the main test.")
+    result["steps"] += [
+        {"title": "Fit a straight line: slope",
+         "formula": "b = Σ(xᵢ − x̄)(yᵢ − ȳ) / Σ(xᵢ − x̄)²"
+                    ", x = gain setting, y = crest factor",
+         "working": f"mean gain {fit['mean_x']:.3f}, mean crest {fit['mean_y']:.3f} dB; "
+                    f"{fit['sxy']:,.3f} / {fit['sxx']:,.3f}",
+         "result": f"b = {b:.3f} dB per setting",
+         "explain": f"Of all the straight lines that could be drawn through the dots, this is "
+                    f"the one that keeps them closest, judged by the sum of the squared "
+                    f"vertical gaps (‘least squares’). Its slope is the average change in "
+                    f"crest factor for one step of the knob: here {abs(b):.2f} dB "
+                    f"{'lower' if b < 0 else 'higher'} per setting. It is worked out from how "
+                    f"far each note sits from the average gain ({fit['mean_x']:.2f}) and the "
+                    f"average crest factor ({fit['mean_y']:.2f} dB): the slope is how much the "
+                    f"two move together ({fit['sxy']:,.2f}) divided by how much the gain "
+                    f"varies ({fit['sxx']:,.2f})."},
+        {"title": "Fit a straight line: intercept",
+         "formula": "a = ȳ − b × x̄",
+         "working": f"{fit['mean_y']:.3f} − ({b:.3f} × {fit['mean_x']:.3f})",
+         "result": f"a = {a:.2f} dB",
+         "explain": f"The best line always passes through the point of averages, so once the "
+                    f"slope is known the rest follows. The intercept is where the line meets "
+                    f"setting 0: its estimate of the crest factor with no added gain, "
+                    f"{a:.2f} dB. The fitted line is {result['fit']['equation']}, drawn on the "
+                    f"chart."},
+        {"title": "How well does a straight line fit? (R²)",
+         "formula": "R² = 1 − (Σ squared gaps from the line) / (Σ squared gaps from the mean)",
+         "working": f"1 − {fit['ss_res']:,.3f} / {fit['syy']:,.3f}",
+         "result": f"R² = {fit['r2']:.3f}",
+         "explain": f"Before the line, the crest factors vary around their average by "
+                    f"{fit['syy']:,.2f} (summed squared gaps); around the line, only "
+                    f"{fit['ss_res']:,.2f} is left. So the line accounts for "
+                    f"{fit['r2']:.0%} of the variation, and the rest is pluck-to-pluck "
+                    f"scatter plus any curve the line cannot follow. {curve}"},
+        {"title": "How precise is the slope? (bootstrap)",
+         "formula": f"resample the notes with replacement {BOOTSTRAPS:,} times, refit the "
+                    "line, keep the middle 95% of slopes",
+         "working": f"2.5th and 97.5th percentiles of {s_used:,} resampled slopes",
+         "result": (f"95% interval {s_low:.3f} to {s_high:.3f} dB per setting"
+                    if not math.isnan(s_low) else "too few usable resamples"),
+         "explain": f"The same resampling as for ρ: draw {n} notes at random from your "
+                    f"{n}, allowing repeats, refit the line, and repeat {BOOTSTRAPS:,} times. "
+                    f"The middle 95% of the slopes is a plausible range for the real rate. "
+                    f"{slope_range}"},
+    ]
+
     if n < MIN_NOTES:
         result["warnings"].append(f"Only {n} notes: treat the interval as rough until there are "
                                   f"at least {MIN_NOTES}.")
@@ -264,7 +371,8 @@ def analyse(gains: list[float], crest_db: list[float]) -> dict:
         + (f", 95% interval {low:.2f} to {high:.2f}" if not math.isnan(low) else "")
         + (f", p < 0.001" if p < 0.001 else f", p = {p:.3f}") + "). "
         f"Mean crest factor goes from {lowest['mean']:.2f} dB at setting {lowest['gain']:g} "
-        f"to {highest['mean']:.2f} dB at setting {highest['gain']:g}. "
+        f"to {highest['mean']:.2f} dB at setting {highest['gain']:g}; a straight line puts "
+        f"the average change at {b:+.2f} dB per setting (R² = {fit['r2']:.2f}). "
         + ("This is unlikely to be chance." if certain else
            "This could still be chance; record more notes."))
     return result

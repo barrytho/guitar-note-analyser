@@ -10,9 +10,12 @@
 
 const GuitarnoteBackend = (() => {
   const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
+  // The hosted copy's build id, written in by scripts/build_site.py. The page
+  // (a <meta> tag) and the Python (guitarnote.__build__) carry the same id.
+  const BUILD = "ad5537857f85";
   // Every module app.py needs, directly or not. tests/test_site.py checks this
   // list against the package, so a new module cannot be forgotten here.
-  const MODULES = ["__init__", "wav", "measure", "stats", "store", "demo", "app"];
+  const MODULES = ["__init__", "wav", "measure", "stats", "store", "demo", "explain", "app"];
   const DB_DIR = "/data";
   const nativeFetch = window.fetch.bind(window);
   const base = new URL(".", document.baseURI);    // the folder index.html came from
@@ -51,7 +54,7 @@ const GuitarnoteBackend = (() => {
     say("Loading the measurement code…");
     py.FS.mkdirTree("/home/pyodide/guitarnote");
     for (const name of MODULES) {
-      const response = await nativeFetch(new URL(`py/guitarnote/${name}.py`, base));
+      const response = await nativeFetch(new URL(`py/guitarnote/${name}.py?v=${BUILD}`, base));
       if (!response.ok) throw new Error(`The site is missing py/guitarnote/${name}.py.`);
       py.FS.writeFile(`/home/pyodide/guitarnote/${name}.py`, await response.text());
     }
@@ -76,6 +79,8 @@ def _handle(method, path, query, body):
     return [response.status, response.content_type, response.filename or "", response.body]
 `);
     handle = py.globals.get("_handle");
+    const pythonBuild = py.runPython("import guitarnote; guitarnote.__build__");
+    if (pythonBuild !== BUILD) await reloadFresh(`Python ${pythonBuild}`);
     say("");
   }
 
@@ -128,9 +133,36 @@ def _handle(method, path, query, body):
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  // GitHub Pages lets browsers keep each file for ten minutes and ignores the
+  // ?v= on a URL, so after a publish a page cached from before can be served
+  // new scripts, or the reverse. Every part carries the build id; if they
+  // disagree, fetch the page afresh and reload, once. A second mismatch in the
+  // same session stops with a message rather than reloading for ever.
+  async function reloadFresh(other) {
+    const key = "guitarnote.refreshed";
+    const marker = `${BUILD}/${other}`;
+    let tried = false;
+    try { tried = sessionStorage.getItem(key) === marker; } catch (error) { /* private window */ }
+    if (tried) {
+      throw new Error("This page has just been updated and the browser is still holding part of " +
+                      "the old version. Reload it in a minute or two.");
+    }
+    try { sessionStorage.setItem(key, marker); } catch (error) { /* private window */ }
+    say("A new version of this page has been published; loading it\u2026");
+    await nativeFetch(location.href, {cache: "reload"}).catch(() => {});
+    location.reload();
+    await new Promise(() => {});                  // the page is reloading
+  }
+
   const ready = (async () => {
     if (await serverAnswers()) return "server";
+    const meta = document.querySelector('meta[name="guitarnote-build"]');
+    const pageBuild = meta ? meta.content : "dev";
+    if (pageBuild !== BUILD) await reloadFresh(`page ${pageBuild}`);
     await startPython();
+    // Consistent: forget any earlier retry, so the guard in reloadFresh only
+    // trips when the load just before this one was itself the retry.
+    try { sessionStorage.removeItem("guitarnote.refreshed"); } catch (error) { /* private window */ }
     window.fetch = pythonFetch;
     document.addEventListener("click", downloadThroughPython, true);
     const note = document.getElementById("mode-note");
@@ -138,5 +170,5 @@ def _handle(method, path, query, body):
     return "browser";
   })();
 
-  return {ready};
+  return {ready, build: BUILD};
 })();
