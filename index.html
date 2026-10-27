@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guitar Note Analyser</title>
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<header class="masthead">
+  <h1>Guitar note analyser</h1>
+  <p>Record a note at each gain setting. Each note's <strong>crest factor</strong> (peak ÷ RMS)
+     is measured, and the notes are tested for whether the crest factor follows the knob.
+     Clipping flattens the peaks, so more gain should mean a lower crest factor.</p>
+  <p id="mode-note" class="mode-note" hidden>This copy runs entirely in your browser. Your notes and
+     recordings are saved in this browser only and are never uploaded, so use
+     <em>Database (SQLite)</em> below now and then to keep a copy.</p>
+</header>
+
+<main>
+<div class="top">
+  <section class="card" id="record-card" aria-labelledby="record-title">
+    <h2 id="record-title">Record a note</h2>
+    <div class="fields">
+      <label>Pedal
+        <input id="pedal" list="pedal-list" autocomplete="off" value="My pedal">
+        <datalist id="pedal-list"></datalist>
+      </label>
+      <label>Gain setting
+        <span class="stepper">
+          <button type="button" id="gain-down" aria-label="Lower gain setting">−</button>
+          <input id="gain" type="number" step="0.5" min="0" value="0" inputmode="decimal">
+          <button type="button" id="gain-up" aria-label="Raise gain setting">+</button>
+        </span>
+        <small id="gain-count" class="hint"></small>
+      </label>
+      <label>Note label
+        <input id="label" list="label-list" autocomplete="off" placeholder="e.g. A2 open string">
+        <datalist id="label-list"></datalist>
+      </label>
+      <label>Input
+        <select id="device"><option value="">Default input</option></select>
+      </label>
+      <label>Record for
+        <select id="duration">
+          <option value="2">2 seconds</option>
+          <option value="3" selected>3 seconds</option>
+          <option value="4">4 seconds</option>
+          <option value="6">6 seconds</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="record" class="primary">● Record</button>
+      <label class="button" for="upload">Upload WAV…</label>
+      <input id="upload" type="file" accept=".wav,audio/wav,audio/x-wav" multiple hidden>
+    </div>
+    <p class="demo-line">No guitar to hand?
+      <button type="button" id="load-demo">Load demo notes</button>
+      <span class="hint">33 synthetic notes from a simulated clipper, under their own pedal name.
+        They show how the app works and say nothing about any real pedal.</span>
+    </p>
+
+    <div class="meter" aria-hidden="true"><div id="meter-fill"></div><div class="meter-zone"></div></div>
+    <p id="meter-text" class="hint">Input level appears here while recording. Keep peaks below −6 dBFS.</p>
+    <p id="status" role="status" aria-live="polite"></p>
+    <p id="processing" class="hint"></p>
+
+    <details class="protocol">
+      <summary>How to record</summary>
+      <ol>
+        <li>Plug the pedal's output into your audio interface and choose it under <em>Input</em>.</li>
+        <li>Use one note throughout (say the open A string), plucked the same way each time.</li>
+        <li>Press <em>Record</em>, pluck once, and let the note ring. One note per recording.</li>
+        <li>Record about five notes at each gain setting, then move the knob and repeat.</li>
+        <li>Keep the interface's input below −6 dBFS: clipping in the interface flattens peaks
+            exactly as the pedal does and would count as extra distortion.</li>
+      </ol>
+      <p>The browser's echo cancellation, noise suppression and automatic gain control are switched
+         off for recording, since each of them would change the waveform being measured.</p>
+    </details>
+  </section>
+
+  <section class="card" id="note-card" aria-labelledby="note-title">
+    <h2 id="note-title">This note</h2>
+    <p id="note-empty" class="hint">Record or upload a note, or pick one from the list below.</p>
+    <div id="note-body" hidden>
+      <div class="headline">
+        <div><span class="big" id="note-crest"></span><span class="unit">dB crest factor</span></div>
+        <div class="facts" id="note-facts"></div>
+      </div>
+      <div id="note-warnings"></div>
+      <figure class="chart">
+        <figcaption>Whole recording, with the analysed window shaded</figcaption>
+        <div id="chart-overview"></div>
+        <div class="downloads" data-chart="chart-overview"></div>
+      </figure>
+      <figure class="chart">
+        <figcaption>30 ms close-up around the peak: dashed = ±peak, solid = ±RMS</figcaption>
+        <div id="chart-zoom"></div>
+        <div class="downloads" data-chart="chart-zoom"></div>
+      </figure>
+      <h3>How this number was calculated</h3>
+      <ol class="steps" id="note-steps"></ol>
+      <div class="downloads">
+        <a id="dl-audio" class="button">Recording (WAV)</a>
+        <a id="dl-window" class="button">Analysed samples (CSV)</a>
+      </div>
+      <details class="edit">
+        <summary>Edit this note</summary>
+        <form id="edit-form" class="fields">
+          <label>Pedal <input name="pedal" required></label>
+          <label>Gain setting <input name="gain" type="number" step="any" required></label>
+          <label>Note label <input name="label"></label>
+          <label class="wide">Comment <input name="comment"></label>
+          <label class="check"><input name="included" type="checkbox"> Include in the analysis</label>
+          <div class="actions"><button type="submit">Save changes</button></div>
+        </form>
+      </details>
+    </div>
+  </section>
+</div>
+
+<section class="card" id="analysis-card" aria-labelledby="analysis-title">
+  <div class="card-head">
+    <h2 id="analysis-title">Does the crest factor follow the knob?</h2>
+    <label class="inline">Notes
+      <select id="label-filter"><option value="__all__">All labels</option></select>
+    </label>
+  </div>
+  <p id="verdict" class="verdict"></p>
+  <div id="analysis-warnings"></div>
+  <figure class="chart">
+    <figcaption>Crest factor at each gain setting: small dots are notes, large dots the mean
+      ± one standard error</figcaption>
+    <div id="chart-gain"></div>
+    <div class="downloads" data-chart="chart-gain"></div>
+  </figure>
+  <h3>Summary at each setting</h3>
+  <div class="table-wrap"><table id="summary-table"></table></div>
+  <h3>How the result was calculated</h3>
+  <ol class="steps" id="analysis-steps"></ol>
+  <details>
+    <summary>Rank table</summary>
+    <div class="table-wrap"><table id="rank-table"></table></div>
+  </details>
+  <div class="downloads">
+    <a id="dl-summary" class="button">Summary (CSV)</a>
+  </div>
+</section>
+
+<section class="card" id="notes-card" aria-labelledby="notes-title">
+  <div class="card-head">
+    <h2 id="notes-title">All notes for this pedal</h2>
+    <div class="downloads">
+      <a id="dl-notes" class="button">Notes (CSV)</a>
+      <a id="dl-all" class="button" href="api/export/notes.csv">Every pedal (CSV)</a>
+      <a id="dl-db" class="button" href="api/export/notes.db">Database (SQLite)</a>
+    </div>
+  </div>
+  <p class="hint">Notes are never deleted. Untick a note to leave it out of the analysis.</p>
+  <div class="table-wrap"><table id="notes-table"></table></div>
+</section>
+</main>
+
+<footer>Measured in the browser-recorded or uploaded audio exactly as stored; nothing leaves this computer.</footer>
+<script src="static/browser.js"></script>
+<script src="static/charts.js"></script>
+<script src="static/app.js"></script>
+</body>
+</html>
