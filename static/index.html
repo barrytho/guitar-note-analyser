@@ -12,6 +12,43 @@
   <p>Record a note at each gain setting. Each note's <strong>crest factor</strong> (peak ÷ RMS)
      is measured, and the notes are tested for whether the crest factor follows the knob.
      Clipping flattens the peaks, so more gain should mean a lower crest factor.</p>
+  <details class="glossary">
+    <summary>What the terms mean</summary>
+    <dl>
+      <dt>Sample</dt><dd>One number in a recording: the signal's voltage at one instant, scaled
+        so that &plusmn;1 is the loudest the file can hold.</dd>
+      <dt>Sample rate</dt><dd>How many samples are taken each second, usually 44,100 or 48,000.</dd>
+      <dt>dBFS</dt><dd>Decibels relative to full scale. 0 dBFS is the loudest a recording can be;
+        &minus;12 dBFS is a quarter of that in amplitude.</dd>
+      <dt>Peak</dt><dd>The biggest swing away from zero in the measured window, ignoring
+        whether it is up or down.</dd>
+      <dt>RMS</dt><dd>Root mean square: square every sample, average the squares, take the square
+        root. The note&rsquo;s effective level, roughly how loud it sounds.</dd>
+      <dt>Crest factor</dt><dd>Peak &divide; RMS, given in decibels. High (about 8 dB) for a
+        clean plucked note, whose peaks are sharp; 0 dB for a square wave, whose every sample
+        is at the peak. Clipping flattens the peaks, so it lowers the crest factor.</dd>
+      <dt>Decibel (dB)</dt><dd>A scale for ratios on which equal steps are equal proportions.
+        For amplitudes, dB = 20 &times; log<sub>10</sub>(ratio): a ratio of 2 is 6.02 dB, 1 is 0 dB.</dd>
+      <dt>Onset</dt><dd>Where the pluck begins: the first 5 ms slice whose level reaches 10% of
+        the loudest slice.</dd>
+      <dt>Analysis window</dt><dd>The 300 ms of each note that is measured, starting 50 ms after
+        the onset, past the click of the pick.</dd>
+      <dt>Rank</dt><dd>A value&rsquo;s place in order, smallest first. Tied values share the average
+        of the places they fill.</dd>
+      <dt>Spearman&rsquo;s &rho; (rho)</dt><dd>How consistently one ranking follows another, from
+        &minus;1 (perfectly opposite) through 0 (unrelated) to +1 (perfectly together).</dd>
+      <dt>p-value</dt><dd>The chance of a relationship at least this strong if the gain knob made
+        no difference at all. Below 0.05 is usually taken as unlikely to be chance.</dd>
+      <dt>95% interval</dt><dd>A range that, judged by resampling your own notes, probably holds the
+        true &rho;. Narrower with more notes.</dd>
+      <dt>Standard deviation</dt><dd>How far a single note typically sits from the average at its
+        setting: mostly how consistently you plucked.</dd>
+      <dt>Standard error</dt><dd>Standard deviation &divide; &radic;(number of notes): how precisely the
+        average is known. The error bars on the gain chart are &plusmn; one standard error.</dd>
+      <dt>Excluded note</dt><dd>A note kept in the database but left out of the analysis. Untick
+        and tick again in the notes table.</dd>
+    </dl>
+  </details>
   <p id="mode-note" class="mode-note" hidden>This copy runs entirely in your browser. Your notes and
      recordings are saved in this browser only and are never uploaded, so use
      <em>Database (SQLite)</em> below now and then to keep a copy.</p>
@@ -90,18 +127,27 @@
         <div><span class="big" id="note-crest"></span><span class="unit">dB crest factor</span></div>
         <div class="facts" id="note-facts"></div>
       </div>
+      <div id="note-reading" class="reading"></div>
       <div id="note-warnings"></div>
       <figure class="chart">
-        <figcaption>Whole recording, with the analysed window shaded</figcaption>
+        <figcaption><strong>The whole recording.</strong> Each thin vertical stroke spans the lowest
+          to the highest sample at that moment. The dashed red line is where the pluck was found
+          (step 2); the shaded band is the 300 ms that is measured (step 3).</figcaption>
         <div id="chart-overview"></div>
         <div class="downloads" data-chart="chart-overview"></div>
       </figure>
       <figure class="chart">
-        <figcaption>30 ms close-up around the peak: dashed = ±peak, solid = ±RMS</figcaption>
+        <figcaption><strong>A 30 ms close-up</strong> inside the measured window, around its biggest
+          swing. Dashed red: &plusmn; the peak (step 4). Solid green: &plusmn; the RMS (step 6). The
+          crest factor compares the two: the closer they are, the more the peaks have been
+          flattened.</figcaption>
         <div id="chart-zoom"></div>
         <div class="downloads" data-chart="chart-zoom"></div>
       </figure>
       <h3>How this number was calculated</h3>
+      <p class="explain">Each step shows the formula, then the numbers from this recording put
+        into it (after &ldquo;=&rdquo;), then the result (after &ldquo;&rarr;&rdquo;), then what it
+        means. Every number comes from this note&rsquo;s own samples.</p>
       <ol class="steps" id="note-steps"></ol>
       <div class="downloads">
         <a id="dl-audio" class="button">Recording (WAV)</a>
@@ -132,14 +178,21 @@
   <p id="verdict" class="verdict"></p>
   <div id="analysis-warnings"></div>
   <figure class="chart">
-    <figcaption>Crest factor at each gain setting: small dots are notes, large dots the mean
-      ± one standard error</figcaption>
+    <figcaption><strong>Crest factor at each gain setting.</strong> Each small dot is one note
+      (spread sideways a little so they do not hide each other); each large dot is the average at
+      that setting, with error bars of &plusmn; one standard error. If the pedal&rsquo;s clipping
+      follows the knob, the dots fall from left to right.</figcaption>
     <div id="chart-gain"></div>
     <div class="downloads" data-chart="chart-gain"></div>
   </figure>
   <h3>Summary at each setting</h3>
+  <p id="summary-explain" class="explain"></p>
   <div class="table-wrap"><table id="summary-table"></table></div>
   <h3>How the result was calculated</h3>
+  <p class="explain">The question is whether turning up the gain lowers the crest factor.
+    These steps measure how consistently it does (&rho;), how likely that is to be luck
+    (p), and how precisely it is known (the 95% interval), using only the notes included
+    above.</p>
   <ol class="steps" id="analysis-steps"></ol>
   <details>
     <summary>Rank table</summary>

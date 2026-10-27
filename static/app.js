@@ -61,7 +61,31 @@ function renderSteps(list, steps) {
     h("span", {class: "t"}, step.title),
     h("span", {class: "f"}, step.formula),
     h("span", {class: "w"}, step.working),
-    h("span", {class: "r"}, step.result))));
+    h("span", {class: "r"}, step.result),
+    step.explain ? h("p", {class: "x"}, step.explain) : null)));
+}
+
+// Where this crest factor sits between a square wave (0 dB) and a clean note,
+// with the comparison against the pedal's lowest setting. The words come from
+// Python; this only places the markers.
+function renderReading(detail) {
+  const crest = detail.measurement.crest_db, reading = detail.reading;
+  const top = Math.max(10, Math.ceil(crest + 1));
+  const at = db => `${Math.max(0, Math.min(100, db / top * 100))}%`;
+  const scale = h("div", {class: "scale", role: "img",
+                          "aria-label": `Crest factor scale from 0 to ${top} dB, this note at ${fixed(crest, 2)} dB`},
+    h("div", {class: "bar"}),
+    // Labels at either end are aligned inwards so they stay inside the scale.
+    ...reading.references.map(r => h("div", {class: "ref" + (r.db / top < 0.15 ? " start" : r.db / top > 0.85 ? " end" : ""),
+                                              style: `left:${at(r.db)}`},
+      h("span", {class: "tick"}), h("span", {class: "ref-label"}, `${fixed(r.db, r.db % 1 ? 2 : 0)} dB`))),
+    h("div", {class: "this", style: `left:${at(crest)}`}, h("span", {}, `this note ${fixed(crest, 2)} dB`)));
+  $("#note-reading").replaceChildren(
+    h("p", {class: "reading-text"}, h("strong", {}, `Reads as ${reading.label}. `), reading.text),
+    scale,
+    h("p", {class: "scale-key"}, reading.references.map(r => `${fixed(r.db, r.db % 1 ? 2 : 0)} dB: ${r.label}`).join(" \u00b7 ")),
+    detail.baseline ? h("p", {class: "reading-text"}, h("strong", {}, "Against the lowest setting: "),
+                        detail.baseline.text) : null);
 }
 
 function renderWarnings(box, warnings) {
@@ -163,6 +187,7 @@ function renderNote(detail) {
     h("div", {}, `peak ${sig(m.peak)} ÷ RMS ${sig(m.rms)} = ${fixed(m.crest_ratio, 4)}`),
     h("div", {}, `${note.pedal} · gain ${note.gain}` + (note.label ? ` · ${note.label}` : "") +
                  ` · ${when(note.created_at)}` + (note.included ? "" : " · excluded from the analysis")));
+  renderReading(detail);
   renderWarnings($("#note-warnings"), note.warnings);
 
   const duration = m.n_samples / m.sample_rate;
@@ -284,6 +309,7 @@ function renderAnalysis(result) {
       h("td", {}, g.se == null ? "– (needs 2 notes)" : `${fixed(g.sd, 3)} ÷ √${g.n} = ${fixed(g.se, 3)}`)))));
 
   renderSteps($("#analysis-steps"), result.steps);
+  $("#summary-explain").textContent = result.summary_explain || "";
   $("#rank-table").replaceChildren(
     h("thead", {}, h("tr", {}, ["Gain", "Gain rank (a)", "Crest factor (dB)", "Crest rank (b)"].map(t => h("th", {}, t)))),
     h("tbody", {}, result.ranks.map(r => h("tr", {},

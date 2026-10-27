@@ -151,33 +151,104 @@ def analyse(gains: list[float], crest_db: list[float]) -> dict:
                   ranks=[{"gain": g, "crest_db": c, "gain_rank": a, "crest_rank": b}
                          for g, c, a, b in zip(gains, crest_db, rx, ry)])
 
+    # Worked examples from this data, for the explanations.
+    first = groups[0]
+    first_rank = (1 + first["n"]) / 2
+    low_i = min(range(n), key=crest_db.__getitem__)
+    high_i = max(range(n), key=crest_db.__getitem__)
+    scale = math.sqrt(sxx * syy)
+    if extreme == 0:
+        chance = (f"none of the {PERMUTATIONS:,} shuffles came as close to \u00b11 as your "
+                  f"notes ({abs(rho):.3f}), so a relationship this strong would turn up by luck "
+                  f"less than once in {PERMUTATIONS:,} tries")
+    else:
+        chance = (f"{extreme:,} of the {PERMUTATIONS:,} shuffles came at least as close to "
+                  f"\u00b11 as your notes ({abs(rho):.3f}), so luck alone produces a relationship "
+                  f"this strong about {p:.1%} of the time")
+    if math.isnan(low):
+        spread = "There were too few usable resamples to give a range."
+    elif high < 0:
+        spread = ("The whole range is below zero, so the direction (more gain, lower crest "
+                  "factor) is not in doubt; how close it comes to \u22121 says how consistent "
+                  "the effect is.")
+    elif low > 0:
+        spread = ("The whole range is above zero: the crest factor reliably rises with gain, "
+                  "the opposite of what clipping does, so check the gain settings.")
+    else:
+        spread = ("The range includes zero, so these notes cannot yet rule out no "
+                  "relationship at all. More notes, at more settings, will narrow it.")
+
     result["steps"] = [
         {"title": "Rank the gain settings",
          "formula": "smallest = rank 1; tied values share the average of their ranks",
          "working": f"{n} notes at {len(groups)} settings",
-         "result": "see the rank table"},
+         "result": "see the rank table",
+         "explain": f"Spearman's method asks only whether higher settings go with lower crest "
+                    f"factors, not by how much, so each number is replaced by its place in "
+                    f"order, its rank. Notes at the same setting are tied and share the "
+                    f"average of the places they fill: the {first['n']} note"
+                    f"{'s' if first['n'] != 1 else ''} at setting {first['gain']:g} fill places "
+                    f"1 to {first['n']}, so each gets rank {first_rank:g}. Working with ranks "
+                    f"also means the curve can bend (a clipper saturates as it nears a square "
+                    f"wave) without counting against the result."},
         {"title": "Rank the crest factors",
          "formula": "smallest = rank 1, the same way",
          "working": f"{n} crest factors",
-         "result": "see the rank table"},
-        {"title": "Correlate the ranks (Spearman's ρ)",
-         "formula": "ρ = Σ(aᵢ − ā)(bᵢ − b̄) / "
-                    "√[Σ(aᵢ − ā)² × Σ(bᵢ − b̄)²]"
+         "result": "see the rank table",
+         "explain": f"The crest factors are ranked the same way: the smallest, "
+                    f"{crest_db[low_i]:.2f} dB (a note at setting {gains[low_i]:g}), gets rank "
+                    f"{ry[low_i]:g}, and the largest, {crest_db[high_i]:.2f} dB (setting "
+                    f"{gains[high_i]:g}), gets rank {ry[high_i]:g}. The rank table lists every "
+                    f"note's pair of ranks."},
+        {"title": "Correlate the ranks (Spearman's \u03c1)",
+         "formula": "\u03c1 = \u03a3(a\u1d62 \u2212 \u0101)(b\u1d62 \u2212 b\u0304) / "
+                    "\u221a[\u03a3(a\u1d62 \u2212 \u0101)\u00b2 \u00d7 \u03a3(b\u1d62 \u2212 b\u0304)\u00b2]"
                     ", a = gain rank, b = crest rank",
-         "working": f"mean rank {mean_rank:.2f}; {sxy:,.2f} / √({sxx:,.2f} × {syy:,.2f})",
-         "result": f"ρ = {rho:.3f}"},
+         "working": f"mean rank {mean_rank:.2f}; {sxy:,.2f} / \u221a({sxx:,.2f} \u00d7 {syy:,.2f})",
+         "result": f"\u03c1 = {rho:.3f}",
+         "explain": f"This measures how closely the two rankings move together. For each note, "
+                    f"how far its gain rank sits from the middle rank ({mean_rank:.2f}) is "
+                    f"multiplied by how far its crest rank does, and the products are added: "
+                    f"{sxy:,.2f}. Dividing by {scale:,.2f}, the size a perfect match would "
+                    f"give, puts the answer on a scale from \u22121 to +1. \u22121 would mean "
+                    f"every step up the knob lowers the crest factor, 0 no relationship, and +1 "
+                    f"the reverse. Your \u03c1 of {rho:.3f} is a {_strength(rho)} "
+                    f"{'negative' if rho < 0 else 'positive'} relationship."},
         {"title": "Could chance alone do this? (permutation test)",
          "formula": f"shuffle the crest factors among the notes {PERMUTATIONS:,} times; "
-                    "p = (shuffles with |ρ| at least as large + 1) / (shuffles + 1)",
+                    "p = (shuffles with |\u03c1| at least as large + 1) / (shuffles + 1)",
          "working": f"({extreme:,} + 1) / ({PERMUTATIONS:,} + 1)",
-         "result": f"p = {p:.4f}" if p >= 0.0001 else f"p < 0.0001 (none of {PERMUTATIONS:,} shuffles)"},
-        {"title": "How precise is ρ? (bootstrap)",
-         "formula": f"resample the notes with replacement {BOOTSTRAPS:,} times, recompute ρ, "
+         "result": f"p = {p:.4f}" if p >= 0.0001 else f"p < 0.0001 (none of {PERMUTATIONS:,} shuffles)",
+         "explain": f"Suppose the knob made no difference. Then which crest factor went with "
+                    f"which setting would be down to chance, and shuffling them would often "
+                    f"give a correlation as strong as yours. Here {chance}. That is the "
+                    f"p-value: the chance of a result at least this strong if the knob did "
+                    f"nothing. Below 0.05 (1 in 20) is the usual line for \u2018unlikely to be "
+                    f"chance\u2019."},
+        {"title": "How precise is \u03c1? (bootstrap)",
+         "formula": f"resample the notes with replacement {BOOTSTRAPS:,} times, recompute \u03c1, "
                     "keep the middle 95%",
          "working": f"2.5th and 97.5th percentiles of {used:,} resampled values",
          "result": (f"95% interval {low:.3f} to {high:.3f}" if not math.isnan(low)
-                    else "too few usable resamples")},
+                    else "too few usable resamples"),
+         "explain": f"Record the whole session again and \u03c1 would come out a little "
+                    f"different, because every pluck varies. The bootstrap imitates that "
+                    f"without recording again: it draws {n} notes at random from your {n}, "
+                    f"allowing repeats, recomputes \u03c1, and does this {BOOTSTRAPS:,} times. "
+                    f"The middle 95% of the results is a plausible range for the real "
+                    f"\u03c1. {spread}"},
     ]
+    example = max(groups, key=lambda g: g["n"])
+    result["summary_explain"] = (
+        "Mean: the average crest factor of the notes at that setting. Standard deviation: "
+        "how far a single note typically sits from that average, which mostly reflects how "
+        "consistently the note was plucked. Standard error (standard deviation \u00f7 \u221an): "
+        "how precisely the average itself is known; more notes make it smaller, and the "
+        "error bars in the chart are \u00b1 one standard error."
+        + (f" For example, at setting {example['gain']:g} the {example['n']} notes average "
+           f"{example['mean']:.2f} dB, a single note typically sits {example['sd']:.2f} dB "
+           f"away from that, and the average is known to about \u00b1{example['se']:.2f} dB."
+           if example["n"] > 1 else ""))
 
     if n < MIN_NOTES:
         result["warnings"].append(f"Only {n} notes: treat the interval as rough until there are "

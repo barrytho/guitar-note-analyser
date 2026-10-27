@@ -34,6 +34,7 @@ import io
 import json
 import math
 import re
+import statistics
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -42,7 +43,7 @@ from pathlib import Path
 
 from . import __version__, stats
 from .demo import DEMO_PEDAL, add_demo_notes
-from .measure import NoteError, chart_data, measure
+from .measure import NoteError, chart_data, describe_crest, measure
 from .store import EXPORT_COLUMNS, Store
 from .wav import WavError, read_wav
 
@@ -207,7 +208,41 @@ class App:
         # the calculation that produced the stored numbers.
         m, steps = measure(audio.samples, audio.sample_rate)
         return {"note": note, "steps": steps, "chart": chart_data(audio.samples, m),
-                "measurement": m.as_dict()}
+                "measurement": m.as_dict(), "reading": describe_crest(m.crest_db),
+                "baseline": self.baseline(note, m.crest_db)}
+
+    def baseline(self, note: dict, crest_db: float) -> dict | None:
+        """This note against the same pedal and label at its lowest gain setting.
+
+        A crest factor means most as a change from the clean end of the knob,
+        since how spiky a note starts out depends on the guitar, the string and
+        the plucking.
+        """
+        same = self.store.notes(pedal=note["pedal"], label=note["label"], included_only=True)
+        if not same:
+            return None
+        lowest = min(n["gain"] for n in same)
+        values = [n["crest_db"] for n in same if n["gain"] == lowest]
+        mean = statistics.fmean(values)
+        where = f"{note['pedal']}" + (f", {note['label']}" if note["label"] else "")
+        if note["gain"] == lowest:
+            text = (f"This note is at the lowest gain setting recorded for {where} "
+                    f"(setting {lowest:g}), which is the baseline the other settings are read "
+                    f"against. The {len(values)} note{'s' if len(values) != 1 else ''} there "
+                    f"average {mean:.2f} dB.")
+        else:
+            difference = crest_db - mean
+            direction = "below" if difference < 0 else "above"
+            meaning = ("That drop is the peak-flattening the pedal adds between the two "
+                       "settings." if difference < 0 else
+                       "A clipper should lower the crest factor, so this is unexpected: "
+                       "uneven plucking can do it at low settings, or the gain may have "
+                       "been entered wrongly.")
+            text = (f"{abs(difference):.2f} dB {direction} the average of the {len(values)} "
+                    f"note{'s' if len(values) != 1 else ''} at setting {lowest:g} "
+                    f"({mean:.2f} dB), the lowest gain recorded for {where}. {meaning}")
+        return {"gain": lowest, "n": len(values), "mean_db": mean,
+                "difference_db": crest_db - mean, "text": text}
 
     def window_csv(self, note_id: int) -> bytes:
         note = self.store.note(note_id)
